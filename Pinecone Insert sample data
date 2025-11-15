@@ -1,0 +1,102 @@
+"""
+Script to insert sample texts into Pinecone vector database
+Run this before using the query app
+"""
+
+from pinecone import Pinecone
+from sentence_transformers import SentenceTransformer
+import uuid
+
+# ============ CONFIGURATION ============
+API_KEY = "pcsk_2x9iWr_FqHAsu7g8LAXgVcZMp9Bzgu5CjQv2Tp9hznFJKHBLFrySUquq95UK2J2qtKM7sB"  # Replace with your API key
+INDEX_NAME = "ai"  # Replace with your index name
+
+# Sample texts to insert
+SAMPLE_TEXTS = [
+    "Artificial Intelligence is transforming the world",
+    "Machine learning models require lots of data",
+    "Python is a popular programming language",
+    "Cloud computing provides scalable solutions",
+    "Data science is the future of technology"
+]
+
+
+def insert_sample_data():
+    """Insert sample texts into Pinecone"""
+
+    print("🔌 Initializing Pinecone connection...")
+    try:
+        pc = Pinecone(api_key=API_KEY)
+        index = pc.Index(INDEX_NAME)
+        print("✓ Connected to Pinecone")
+    except Exception as e:
+        print(f"✗ Failed to connect: {e}")
+        return
+
+    print("\n📚 Loading embedding model...")
+    try:
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        print("✓ Model loaded")
+    except Exception as e:
+        print(f"✗ Failed to load model: {e}")
+        return
+
+    print(f"\n📤 Inserting {len(SAMPLE_TEXTS)} sample texts...\n")
+
+    vectors_to_insert = []
+
+    for i, text in enumerate(SAMPLE_TEXTS, 1):
+        try:
+            # Generate embedding
+            embedding = model.encode(text).tolist()
+
+            # Create unique ID
+            vector_id = str(uuid.uuid4())
+
+            # Create metadata
+            metadata = {"text": text}
+
+            # Add to batch
+            vectors_to_insert.append({
+                "id": vector_id,
+                "values": embedding,
+                "metadata": metadata
+            })
+
+            print(f"✓ Text {i}: {text[:50]}...")
+
+        except Exception as e:
+            print(f"✗ Text {i} failed: {e}")
+
+    print(f"\n⏳ Uploading {len(vectors_to_insert)} vectors to Pinecone...")
+
+    try:
+        # Upsert vectors in batches
+        batch_size = 100
+        for i in range(0, len(vectors_to_insert), batch_size):
+            batch = vectors_to_insert[i:i + batch_size]
+            index.upsert(vectors=batch)
+            print(f"✓ Uploaded batch {i // batch_size + 1}")
+
+        print("\n✅ All texts inserted successfully!")
+
+        # Show index stats
+        stats = index.describe_index_stats()
+        print(f"\n📊 Index Statistics:")
+        print(f"   Total vectors: {stats['total_vector_count']}")
+        print(f"   Dimensions: {stats['dimension']}")
+
+    except Exception as e:
+        print(f"\n✗ Failed to upload vectors: {e}")
+
+
+if __name__ == "__main__":
+    print("=" * 60)
+    print("Pinecone Sample Data Insertion Script")
+    print("=" * 60)
+
+    if API_KEY == "YOUR_PINECONE_API_KEY":
+        print("\n⚠️  ERROR: Please update the API_KEY variable with your Pinecone API key")
+        print("   and optionally update the INDEX_NAME if different from 'default'")
+    else:
+        insert_sample_data()
