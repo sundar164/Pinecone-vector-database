@@ -1,0 +1,477 @@
+"""
+Vector Database Demo with Tkinter GUI (No ChromaDB - Pure Python)
+- Insert 5 text embeddings
+- Create prompt templates
+- Display results in Tkinter interface
+- Uses sentence-transformers + numpy (no ONNX/ChromaDB issues)
+"""
+
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+from sentence_transformers import SentenceTransformer
+import numpy as np
+from scipy.spatial.distance import cosine
+import threading
+import re
+
+# ============================================================================
+# 1. SAMPLE DOCUMENTS FOR EMBEDDINGS
+# ============================================================================
+SAMPLE_DOCUMENTS = [
+    {
+        "id": "doc1",
+        "text": "Machine learning is a subset of artificial intelligence that enables systems to learn and improve from experience.",
+        "metadata": {"category": "AI", "source": "textbook"}
+    },
+    {
+        "id": "doc2",
+        "text": "Python is a high-level programming language known for its simplicity and readability.",
+        "metadata": {"category": "Programming", "source": "guide"}
+    },
+    {
+        "id": "doc3",
+        "text": "Vector databases store data as high-dimensional vectors for efficient similarity search.",
+        "metadata": {"category": "Database", "source": "documentation"}
+    },
+    {
+        "id": "doc4",
+        "text": "Deep learning uses neural networks with multiple layers to process complex data.",
+        "metadata": {"category": "AI", "source": "research"}
+    },
+    {
+        "id": "doc5",
+        "text": "Natural language processing helps computers understand and generate human language.",
+        "metadata": {"category": "NLP", "source": "paper"}
+    }
+]
+
+# ============================================================================
+# 2. PROMPT TEMPLATES
+# ============================================================================
+PROMPT_TEMPLATES = [
+    {
+        "name": "Summary",
+        "template": "Summarize the following in 2-3 sentences: {text}"
+    },
+    {
+        "name": "Question Answering",
+        "template": "Based on this text, answer: {query}\n\nText: {text}"
+    },
+    {
+        "name": "Key Topics",
+        "template": "Extract 3 key topics from: {text}"
+    },
+    {
+        "name": "Sentiment",
+        "template": "Analyze the sentiment of: {text}"
+    },
+    {
+        "name": "Expert Explanation",
+        "template": "Explain this concept to a beginner: {text}"
+    }
+]
+
+
+# ============================================================================
+# 3. SIMPLE VECTOR DATABASE CLASS (No ChromaDB)
+# ============================================================================
+class SimpleVectorDB:
+    """Simple vector database using sentence-transformers and numpy"""
+
+    def __init__(self):
+        print("🔄 Loading embedding model (this may take 30 seconds on first run)...")
+        try:
+            # Load the embedding model
+            self.model = SentenceTransformer('all-MiniLM-L6-v2')
+            print("✅ Model loaded successfully!")
+
+            # Initialize storage
+            self.documents = {}
+            self.embeddings = {}
+            self.doc_ids = []
+
+            # Load documents
+            self.load_documents()
+            print(f"✅ Loaded {len(self.doc_ids)} documents successfully!")
+
+        except Exception as e:
+            print(f"❌ Error initializing database: {e}")
+            raise
+
+    def load_documents(self):
+        """Load and embed all documents"""
+        for doc in SAMPLE_DOCUMENTS:
+            doc_id = doc["id"]
+            self.documents[doc_id] = {
+                "text": doc["text"],
+                "metadata": doc["metadata"]
+            }
+            self.doc_ids.append(doc_id)
+
+        # Generate embeddings for all documents
+        texts = [self.documents[doc_id]["text"] for doc_id in self.doc_ids]
+        print("🔄 Generating embeddings...")
+        embeddings = self.model.encode(texts, show_progress_bar=False)
+
+        for doc_id, embedding in zip(self.doc_ids, embeddings):
+            self.embeddings[doc_id] = embedding
+
+    def search(self, query, num_results=3):
+        """Search for similar documents using cosine similarity"""
+        # Encode the query
+        query_embedding = self.model.encode(query, show_progress_bar=False)
+
+        # Calculate similarities
+        similarities = {}
+        for doc_id, doc_embedding in self.embeddings.items():
+            # Cosine similarity = 1 - cosine_distance
+            distance = cosine(query_embedding, doc_embedding)
+            similarity = 1 - distance
+            similarities[doc_id] = similarity
+
+        # Sort by similarity (descending)
+        sorted_docs = sorted(similarities.items(), key=lambda x: x[1], reverse=True)
+
+        # Return top N results
+        results = {
+            'ids': [],
+            'documents': [],
+            'similarities': []
+        }
+
+        for doc_id, similarity in sorted_docs[:num_results]:
+            results['ids'].append(doc_id)
+            results['documents'].append(self.documents[doc_id]["text"])
+            results['similarities'].append(similarity)
+
+        return results
+
+    def get_all_documents(self):
+        """Get all documents"""
+        return {
+            'ids': self.doc_ids,
+            'documents': [self.documents[doc_id]["text"] for doc_id in self.doc_ids],
+            'metadatas': [self.documents[doc_id]["metadata"] for doc_id in self.doc_ids]
+        }
+
+    def get_document(self, doc_id):
+        """Get a specific document"""
+        if doc_id in self.documents:
+            return {
+                "id": doc_id,
+                "text": self.documents[doc_id]["text"],
+                "metadata": self.documents[doc_id]["metadata"]
+            }
+        return None
+
+
+# ============================================================================
+# 4. TKINTER GUI APPLICATION
+# ============================================================================
+class VectorDBApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Vector Database Demo - No Dependencies!")
+        self.root.geometry("900x700")
+        self.root.configure(bg="#f0f0f0")
+
+        # Status label (show before initialization)
+        status_frame = tk.Frame(self.root, bg="#e3f2fd")
+        status_frame.pack(fill="x", padx=0, pady=0)
+
+        self.status_label = tk.Label(
+            status_frame,
+            text="⏳ Initializing vector database...",
+            font=("Arial", 10),
+            bg="#e3f2fd",
+            fg="#1976d2",
+            pady=10
+        )
+        self.status_label.pack()
+
+        # Initialize vector database in thread
+        threading.Thread(target=self._init_database, daemon=True).start()
+
+    def _init_database(self):
+        """Initialize database in background"""
+        try:
+            self.db = SimpleVectorDB()
+
+            # Update UI on main thread
+            self.root.after(0, self._setup_ui)
+
+        except Exception as e:
+            error_msg = f"Failed to initialize: {str(e)}\n\nMake sure you have installed:\npip install sentence-transformers"
+            self.root.after(0, lambda: messagebox.showerror("Initialization Error", error_msg))
+            self.root.after(0, self.root.destroy)
+
+    def _setup_ui(self):
+        """Setup UI after database initialization"""
+        self.status_label.config(
+            text="✅ Database Ready - 5 documents loaded",
+            fg="#388e3c"
+        )
+
+        # Title
+        title = tk.Label(
+            self.root,
+            text="🔍 Vector Database Demo (No Dependencies!)",
+            font=("Arial", 16, "bold"),
+            bg="#f0f0f0"
+        )
+        title.pack(pady=10)
+
+        # Main frame with tabs
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Tab 1: Documents
+        self.docs_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.docs_frame, text="📄 Documents")
+        self.create_docs_tab()
+
+        # Tab 2: Search
+        self.search_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.search_frame, text="🔎 Search")
+        self.create_search_tab()
+
+        # Tab 3: Prompts
+        self.prompts_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.prompts_frame, text="📝 Prompt Templates")
+        self.create_prompts_tab()
+
+        # Load initial data
+        self.load_initial_data()
+
+    def create_docs_tab(self):
+        """Create the documents viewing tab"""
+        list_label = tk.Label(
+            self.docs_frame,
+            text="Stored Documents:",
+            font=("Arial", 10, "bold")
+        )
+        list_label.pack(anchor="w", padx=10, pady=5)
+
+        frame = tk.Frame(self.docs_frame)
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        scrollbar = ttk.Scrollbar(frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.docs_listbox = tk.Listbox(
+            frame,
+            yscrollcommand=scrollbar.set,
+            font=("Arial", 9)
+        )
+        self.docs_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.docs_listbox.yview)
+        self.docs_listbox.bind("<<ListboxSelect>>", self.on_doc_select)
+
+        display_label = tk.Label(
+            self.docs_frame,
+            text="Document Content:",
+            font=("Arial", 10, "bold")
+        )
+        display_label.pack(anchor="w", padx=10, pady=5)
+
+        self.docs_display = scrolledtext.ScrolledText(
+            self.docs_frame,
+            height=10,
+            font=("Courier", 9),
+            wrap="word"
+        )
+        self.docs_display.pack(fill="both", expand=True, padx=10, pady=5)
+
+    def create_search_tab(self):
+        """Create the search tab"""
+        search_label = tk.Label(
+            self.search_frame,
+            text="Enter search query:",
+            font=("Arial", 10, "bold")
+        )
+        search_label.pack(anchor="w", padx=10, pady=5)
+
+        input_frame = tk.Frame(self.search_frame)
+        input_frame.pack(fill="x", padx=10, pady=5)
+
+        self.search_input = tk.Entry(input_frame, font=("Arial", 10))
+        self.search_input.pack(side="left", fill="x", expand=True, padx=(0, 5))
+        self.search_input.bind("<Return>", lambda e: self.perform_search())
+
+        search_btn = tk.Button(
+            input_frame,
+            text="Search",
+            command=self.perform_search,
+            bg="#4CAF50",
+            fg="white",
+            font=("Arial", 10, "bold"),
+            padx=10
+        )
+        search_btn.pack(side="left")
+
+        results_label = tk.Label(
+            self.search_frame,
+            text="Search Results:",
+            font=("Arial", 10, "bold")
+        )
+        results_label.pack(anchor="w", padx=10, pady=5)
+
+        self.search_results = scrolledtext.ScrolledText(
+            self.search_frame,
+            height=15,
+            font=("Courier", 9),
+            wrap="word"
+        )
+        self.search_results.pack(fill="both", expand=True, padx=10, pady=5)
+
+    def create_prompts_tab(self):
+        """Create the prompt templates tab"""
+        prompt_label = tk.Label(
+            self.prompts_frame,
+            text="Available Prompt Templates:",
+            font=("Arial", 10, "bold")
+        )
+        prompt_label.pack(anchor="w", padx=10, pady=5)
+
+        frame = tk.Frame(self.prompts_frame)
+        frame.pack(fill="both", expand=True, padx=10, pady=5)
+
+        scrollbar = ttk.Scrollbar(frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self.prompts_listbox = tk.Listbox(
+            frame,
+            yscrollcommand=scrollbar.set,
+            font=("Arial", 9)
+        )
+        self.prompts_listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=self.prompts_listbox.yview)
+        self.prompts_listbox.bind("<<ListboxSelect>>", self.on_prompt_select)
+
+        template_label = tk.Label(
+            self.prompts_frame,
+            text="Template Content:",
+            font=("Arial", 10, "bold")
+        )
+        template_label.pack(anchor="w", padx=10, pady=5)
+
+        self.template_display = scrolledtext.ScrolledText(
+            self.prompts_frame,
+            height=8,
+            font=("Courier", 9),
+            wrap="word"
+        )
+        self.template_display.pack(fill="both", expand=True, padx=10, pady=5)
+
+    def load_initial_data(self):
+        """Load data into the UI"""
+        # Load documents
+        docs_data = self.db.get_all_documents()
+        for i, doc_id in enumerate(docs_data['ids']):
+            text_preview = docs_data['documents'][i][:50]
+            self.docs_listbox.insert(tk.END, f"[{doc_id}] {text_preview}...")
+
+        # Load prompts
+        for prompt in PROMPT_TEMPLATES:
+            self.prompts_listbox.insert(tk.END, f"• {prompt['name']}")
+
+    def on_doc_select(self, event):
+        """Handle document selection"""
+        selection = self.docs_listbox.curselection()
+        if selection:
+            docs_data = self.db.get_all_documents()
+            doc_id = docs_data['ids'][selection[0]]
+            doc = self.db.get_document(doc_id)
+
+            if doc:
+                content = f"ID: {doc['id']}\n"
+                content += f"{'=' * 50}\n\n"
+                content += f"TEXT:\n{doc['text']}\n\n"
+                content += f"{'=' * 50}\n"
+                content += f"METADATA:\n"
+                for key, value in doc['metadata'].items():
+                    content += f"  {key}: {value}\n"
+
+                self.docs_display.config(state="normal")
+                self.docs_display.delete(1.0, tk.END)
+                self.docs_display.insert(1.0, content)
+                self.docs_display.config(state="disabled")
+
+    def on_prompt_select(self, event):
+        """Handle prompt selection"""
+        selection = self.prompts_listbox.curselection()
+        if selection:
+            prompt = PROMPT_TEMPLATES[selection[0]]
+
+            content = f"Prompt Name: {prompt['name']}\n"
+            content += f"{'=' * 50}\n\n"
+            content += f"Template:\n{prompt['template']}\n\n"
+            content += f"{'=' * 50}\n"
+            content += f"Variables: {self._extract_variables(prompt['template'])}"
+
+            self.template_display.config(state="normal")
+            self.template_display.delete(1.0, tk.END)
+            self.template_display.insert(1.0, content)
+            self.template_display.config(state="disabled")
+
+    def perform_search(self):
+        """Perform vector search"""
+        query = self.search_input.get().strip()
+        if not query:
+            messagebox.showwarning("Warning", "Please enter a search query")
+            return
+
+        self.status_label.config(text="⏳ Searching...", fg="#FF9800")
+        threading.Thread(
+            target=self._search_thread,
+            args=(query,),
+            daemon=True
+        ).start()
+
+    def _search_thread(self, query):
+        """Search in background thread"""
+        try:
+            results = self.db.search(query, num_results=3)
+
+            display_text = f"Query: '{query}'\n"
+            display_text += f"{'=' * 70}\n\n"
+
+            if results['ids']:
+                for i, (doc_id, text, similarity) in enumerate(
+                        zip(results['ids'], results['documents'], results['similarities']), 1
+                ):
+                    display_text += f"Result {i}:\n"
+                    display_text += f"  ID: {doc_id}\n"
+                    display_text += f"  Similarity Score: {similarity:.4f}\n"
+                    display_text += f"  Text: {text}\n"
+                    display_text += f"{'-' * 70}\n\n"
+            else:
+                display_text += "No results found."
+
+            self.search_results.config(state="normal")
+            self.search_results.delete(1.0, tk.END)
+            self.search_results.insert(1.0, display_text)
+            self.search_results.config(state="disabled")
+
+            self.status_label.config(text="✅ Search Complete", fg="#388e3c")
+
+        except Exception as e:
+            self.root.after(
+                0,
+                lambda: messagebox.showerror("Search Error", f"Error: {str(e)}")
+            )
+            self.status_label.config(text="❌ Search Failed", fg="#d32f2f")
+
+    def _extract_variables(self, template):
+        """Extract variables from template string"""
+        variables = re.findall(r'\{(\w+)\}', template)
+        return ", ".join(set(variables)) if variables else "None"
+
+
+# ============================================================================
+# 5. MAIN APPLICATION
+# ============================================================================
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = VectorDBApp(root)
+    root.mainloop()
