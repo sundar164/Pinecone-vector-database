@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+
+#Install tkinter using: sudo apt install python3-tk
+
+import os
+import threading
+import logging
+import tkinter as tk
+from tkinter import ttk, scrolledtext, messagebox
+from openai import OpenAI
+
+# Reduce noisy logs
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+class AITutorApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("AI Tutor - Study Helper")
+        self.root.geometry("700x560")
+
+      
+        api_key = "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"
+        self.client = OpenAI(api_key=api_key)
+
+        self._build_ui()
+
+    def _build_ui(self):
+        header = tk.Label(self.root, text="AI Study Helper", font=("Arial", 18, "bold"))
+        header.pack(pady=8)
+
+        top_frame = tk.Frame(self.root)
+        top_frame.pack(fill="x", padx=12)
+
+        q_label = tk.Label(top_frame, text="Ask a study question:", font=("Arial", 11))
+        q_label.grid(row=0, column=0, sticky="w")
+
+        self.question_entry = tk.Entry(top_frame, font=("Arial", 11), width=60)
+        self.question_entry.grid(row=1, column=0, columnspan=3, pady=6, sticky="w")
+
+        # Model selector
+        model_label = tk.Label(top_frame, text="Model:", font=("Arial", 10))
+        model_label.grid(row=2, column=0, sticky="w", pady=(6, 0))
+
+        models = ["gpt-4o-mini", "gpt-4o", "gpt-4o-mini-instruct"]
+        self.model_var = tk.StringVar(value=models[0])
+
+        self.model_menu = ttk.Combobox(
+            top_frame, textvariable=self.model_var,
+            values=models, state="readonly", width=30
+        )
+        self.model_menu.grid(row=2, column=1, sticky="w", padx=(6, 0), pady=(6, 0))
+
+        tokens_label = tk.Label(top_frame, text="Max tokens:", font=("Arial", 10))
+        tokens_label.grid(row=2, column=2, sticky="e", padx=(10, 0), pady=(6, 0))
+
+        self.tokens_var = tk.IntVar(value=700)
+        self.tokens_spin = tk.Spinbox(
+            top_frame, from_=50, to=2048, increment=50,
+            textvariable=self.tokens_var, width=7
+        )
+        self.tokens_spin.grid(row=2, column=3, sticky="w", padx=(4, 0), pady=(6, 0))
+
+        examples = tk.Label(
+            self.root,
+            text="Examples: 'Explain photosynthesis', 'What is calculus?'",
+            font=("Arial", 9), fg="gray"
+        )
+        examples.pack(anchor="w", padx=14, pady=(4, 8))
+
+        btn_frame = tk.Frame(self.root)
+        btn_frame.pack(pady=6)
+
+        self.ask_button = tk.Button(
+            btn_frame, text="Get Explanation", command=self.get_explanation,
+            bg="#4CAF50", fg="white", font=("Arial", 11, "bold"), width=18
+        )
+        self.ask_button.pack(side="left", padx=8)
+
+        clear_btn = tk.Button(
+            btn_frame, text="Clear", command=self.clear_all,
+            bg="#f44336", fg="white", font=("Arial", 10), width=10
+        )
+        clear_btn.pack(side="left", padx=8)
+
+        copy_btn = tk.Button(
+            btn_frame, text="Copy Response", command=self.copy_response,
+            bg="#2196F3", fg="white", font=("Arial", 10), width=12
+        )
+        copy_btn.pack(side="left", padx=8)
+
+        resp_label = tk.Label(self.root, text="AI Response:", font=("Arial", 11, "bold"))
+        resp_label.pack(anchor="w", padx=14)
+
+        self.response_text = scrolledtext.ScrolledText(
+            self.root, wrap="word", font=("Arial", 11), height=18
+        )
+        self.response_text.pack(fill="both", expand=True, padx=14, pady=(6, 12))
+        self.response_text.config(state="disabled")
+
+        self.status_label = tk.Label(self.root, text="Ready", font=("Arial", 10), fg="blue")
+        self.status_label.pack(side="bottom", pady=6)
+
+    def get_explanation(self):
+        question = self.question_entry.get().strip()
+        if not question:
+            messagebox.showwarning("Warning", "Please enter a question!")
+            return
+
+        self.ask_button.config(state="disabled")
+        self.status_label.config(text="Loading...", fg="orange")
+        self.root.update_idletasks()
+
+        t = threading.Thread(target=self._fetch_response, args=(question,), daemon=True)
+        t.start()
+
+    def _fetch_response(self, question: str):
+        try:
+            model = self.model_var.get()
+            max_tokens = int(self.tokens_var.get())
+
+            prompt = f"You are a helpful tutor. Explain clearly for a student: {question}"
+
+            response = self.client.responses.create(
+                model=model,
+                input=prompt,
+                max_output_tokens=max_tokens
+            )
+
+            # Prefer response.output_text
+            answer = getattr(response, "output_text", None)
+
+            # Last fallback
+            if not answer:
+                answer = "No text returned by model."
+
+            self.root.after(0, self._display_response, answer)
+
+        except Exception as e:
+            msg = str(e)
+            if "sk-" in msg:  # remove accidental API key exposure
+                msg = "Authentication failed or invalid API key."
+            self.root.after(0, lambda: messagebox.showerror("API Error", msg))
+
+        finally:
+            self.root.after(0, self._reset_ui)
+
+    def _display_response(self, text: str):
+        self.response_text.config(state="normal")
+        self.response_text.delete("1.0", "end")
+        self.response_text.insert("1.0", text)
+        self.response_text.config(state="disabled")
+
+    def _reset_ui(self):
+        self.ask_button.config(state="normal")
+        self.status_label.config(text="Ready", fg="blue")
+
+    def clear_all(self):
+        self.question_entry.delete(0, "end")
+        self.response_text.config(state="normal")
+        self.response_text.delete("1.0", "end")
+        self.response_text.config(state="disabled")
+        self.status_label.config(text="Ready", fg="blue")
+
+    def copy_response(self):
+        text = self.response_text.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("Copy", "No response to copy.")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        messagebox.showinfo("Copy", "Response copied to clipboard.")
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = AITutorApp(root)
+    root.mainloop()
+
+
+
