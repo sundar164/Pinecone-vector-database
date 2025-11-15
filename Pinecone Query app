@@ -1,0 +1,219 @@
+import tkinter as tk
+from tkinter import ttk, messagebox, scrolledtext
+import threading
+from pinecone import Pinecone
+import os
+
+# For embeddings - using a lightweight option (you can replace with OpenAI if preferred)
+try:
+    from sentence_transformers import SentenceTransformer
+
+    HAS_EMBEDDINGS = True
+except ImportError:
+    HAS_EMBEDDINGS = False
+    print("Warning: sentence-transformers not installed. Install with: pip install sentence-transformers")
+
+
+class PineconeQueryApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Pinecone Vector Database Query App")
+        self.root.geometry("900x700")
+        self.root.configure(bg="#f0f0f0")
+
+        # Initialize Pinecone client (will be set after credentials are entered)
+        self.pc = None
+        self.index = None
+        self.model = None
+        self.is_connected = False
+
+        # Create UI
+        self.create_widgets()
+
+    def create_widgets(self):
+        """Create the UI components"""
+
+        # ============ CONFIGURATION FRAME ============
+        config_frame = ttk.LabelFrame(self.root, text="Pinecone Configuration", padding=10)
+        config_frame.pack(fill="x", padx=10, pady=10)
+
+        # API Key
+        ttk.Label(config_frame, text="API Key:").grid(row=0, column=0, sticky="w", pady=5)
+        self.api_key_entry = ttk.Entry(config_frame, width=50, show="*")
+        self.api_key_entry.grid(row=0, column=1, padx=5, pady=5)
+
+        # Index Name
+        ttk.Label(config_frame, text="Index Name:").grid(row=1, column=0, sticky="w", pady=5)
+        self.index_name_entry = ttk.Entry(config_frame, width=50)
+        self.index_name_entry.grid(row=1, column=1, padx=5, pady=5)
+        self.index_name_entry.insert(0, "default")
+
+        # Connect Button
+        self.connect_btn = ttk.Button(config_frame, text="Connect to Pinecone", command=self.connect_pinecone)
+        self.connect_btn.grid(row=2, column=0, columnspan=2, pady=10, sticky="ew")
+
+        # Status Label
+        self.status_label = ttk.Label(config_frame, text="Status: Disconnected", foreground="red")
+        self.status_label.grid(row=3, column=0, columnspan=2, sticky="w")
+
+        # ============ QUERY FRAME ============
+        query_frame = ttk.LabelFrame(self.root, text="Query Pinecone Index", padding=10)
+        query_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Query Input
+        ttk.Label(query_frame, text="Enter Query Text:").pack(anchor="w", pady=(0, 5))
+        self.query_input = tk.Text(query_frame, height=4, width=80, wrap="word", font=("Arial", 10))
+        self.query_input.pack(fill="x", pady=5)
+
+        # Number of Results
+        results_frame = ttk.Frame(query_frame)
+        results_frame.pack(fill="x", pady=5)
+        ttk.Label(results_frame, text="Number of Results:").pack(side="left", padx=5)
+        self.results_spinbox = ttk.Spinbox(results_frame, from_=1, to=10, width=5)
+        self.results_spinbox.set(5)
+        self.results_spinbox.pack(side="left", padx=5)
+
+        # Query Button
+        self.query_btn = ttk.Button(query_frame, text="Query (Disabled - Connect First)",
+                                    command=self.query_pinecone, state="disabled")
+        self.query_btn.pack(fill="x", pady=10)
+
+        # Results Display
+        ttk.Label(query_frame, text="Query Results:").pack(anchor="w", pady=(10, 5))
+        self.results_display = scrolledtext.ScrolledText(query_frame, height=15, width=80,
+                                                         wrap="word", font=("Courier", 9))
+        self.results_display.pack(fill="both", expand=True, pady=5)
+
+        # Clear Button
+        clear_btn = ttk.Button(query_frame, text="Clear Results", command=self.clear_results)
+        clear_btn.pack(fill="x", pady=5)
+
+    def connect_pinecone(self):
+        """Connect to Pinecone with credentials"""
+        api_key = self.api_key_entry.get().strip()
+        index_name = self.index_name_entry.get().strip()
+
+        if not api_key or not index_name:
+            messagebox.showerror("Error", "Please enter API Key and Index Name")
+            return
+
+        # Run connection in a thread to avoid freezing UI
+        thread = threading.Thread(target=self._connect_thread, args=(api_key, index_name))
+        thread.daemon = True
+        thread.start()
+
+    def _connect_thread(self, api_key, index_name):
+        """Thread function to connect to Pinecone"""
+        try:
+            # Initialize Pinecone client
+            self.pc = Pinecone(api_key=api_key)
+            self.index = self.pc.Index(index_name)
+
+            # Load embedding model (using sentence-transformers)
+            if HAS_EMBEDDINGS:
+                self.model = SentenceTransformer('all-MiniLM-L6-v2')  # Lightweight model
+
+            # Test connection by getting index stats
+            stats = self.index.describe_index_stats()
+
+            self.is_connected = True
+            self.root.after(0, self._update_ui_connected)
+
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Connection Error",
+                                                            f"Failed to connect: {str(e)}"))
+
+    def _update_ui_connected(self):
+        """Update UI after successful connection"""
+        self.status_label.config(text="Status: Connected ✓", foreground="green")
+        self.connect_btn.config(state="disabled")
+        self.query_btn.config(state="normal", text="Query Pinecone Index")
+        messagebox.showinfo("Success", "Successfully connected to Pinecone!")
+
+    def query_pinecone(self):
+        """Query the Pinecone index"""
+        if not self.is_connected:
+            messagebox.showerror("Error", "Not connected to Pinecone")
+            return
+
+        query_text = self.query_input.get("1.0", "end").strip()
+        if not query_text:
+            messagebox.showwarning("Warning", "Please enter a query")
+            return
+
+        if not HAS_EMBEDDINGS:
+            messagebox.showerror("Error", "sentence-transformers library not installed.\n"
+                                          "Install with: pip install sentence-transformers")
+            return
+
+        # Run query in a thread
+        num_results = int(self.results_spinbox.get())
+        thread = threading.Thread(target=self._query_thread, args=(query_text, num_results))
+        thread.daemon = True
+        thread.start()
+
+    def _query_thread(self, query_text, num_results):
+        """Thread function to perform query"""
+        try:
+            # Generate embedding for the query
+            query_embedding = self.model.encode(query_text).tolist()
+
+            # Query Pinecone
+            results = self.index.query(
+                vector=query_embedding,
+                top_k=num_results,
+                include_metadata=True
+            )
+
+            # Format results
+            self.root.after(0, lambda: self._display_results(results, query_text))
+
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Query Error",
+                                                            f"Failed to query: {str(e)}"))
+
+    def _display_results(self, results, query_text):
+        """Display query results in the text widget"""
+        self.results_display.config(state="normal")
+        self.results_display.delete("1.0", "end")
+
+        # Display query
+        self.results_display.insert("end", f"Query: {query_text}\n")
+        self.results_display.insert("end", "=" * 80 + "\n\n")
+
+        # Display results
+        if results.get("matches"):
+            for i, match in enumerate(results["matches"], 1):
+                self.results_display.insert("end", f"Result {i}:\n")
+                self.results_display.insert("end", f"  ID: {match.get('id', 'N/A')}\n")
+                self.results_display.insert("end", f"  Score: {match.get('score', 'N/A'):.4f}\n")
+
+                # Display metadata if available
+                metadata = match.get("metadata", {})
+                if metadata:
+                    self.results_display.insert("end", f"  Text: {metadata.get('text', 'N/A')}\n")
+                    for key, value in metadata.items():
+                        if key != "text":
+                            self.results_display.insert("end", f"  {key}: {value}\n")
+
+                self.results_display.insert("end", "\n")
+        else:
+            self.results_display.insert("end", "No results found.")
+
+        self.results_display.config(state="disabled")
+
+    def clear_results(self):
+        """Clear the results display"""
+        self.results_display.config(state="normal")
+        self.results_display.delete("1.0", "end")
+        self.results_display.config(state="disabled")
+
+
+def main():
+    root = tk.Tk()
+    app = PineconeQueryApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
